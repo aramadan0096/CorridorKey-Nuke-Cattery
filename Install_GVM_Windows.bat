@@ -26,10 +26,11 @@ echo.
 echo [2/2] Downloading GVM Model Weights (WARNING: Massive 80GB+ Download)...
 if not exist "gvm_core\weights" mkdir "gvm_core\weights"
 
-REM TODO: Add the actual download links for the GVM Stable Video Diffusion weights
-echo NOTE: You still need to insert the weight download links into this batch script!
-echo Downloading GVM weights...
-REM curl.exe -L -o "gvm_core\weights\gvm_weight_1.safetensors" "LINK_HERE"
+echo Installing huggingface-cli...
+pip install -U "huggingface_hub[cli]"
+
+echo Downloading GVM weights from HuggingFace...
+huggingface-cli download geyongtao/gvm --local-dir gvm_core\weights
 
 echo.
 echo ===================================================

@@ -26,10 +26,11 @@ echo.
 echo [2/2] Downloading VideoMaMa Model Weights...
 if not exist "VideoMaMaInferenceModule\checkpoints" mkdir "VideoMaMaInferenceModule\checkpoints"
 
-REM TODO: Add the actual download links for VideoMaMa checkpoints
-echo NOTE: You still need to insert the weight download links into this batch script!
-echo Downloading VideoMaMa weights...
-REM curl.exe -L -o "VideoMaMaInferenceModule\checkpoints\videomama_weight.pth" "LINK_HERE"
+echo Installing huggingface-cli...
+pip install -U "huggingface_hub[cli]"
+
+echo Downloading VideoMaMa weights from HuggingFace...
+huggingface-cli download SammyLim/VideoMaMa --local-dir VideoMaMaInferenceModule\checkpoints
 
 echo.
 echo ===================================================

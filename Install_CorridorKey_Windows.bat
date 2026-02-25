@@ -36,8 +36,7 @@ if not exist "CorridorKeyModule\checkpoints" mkdir "CorridorKeyModule\checkpoint
 
 if not exist "CorridorKeyModule\checkpoints\CorridorKey.pth" (
     echo Downloading CorridorKey.pth...
-    REM TODO: Replace this placeholder URL with your actual public download link (e.g. HuggingFace)
-    curl.exe -L -o "CorridorKeyModule\checkpoints\CorridorKey.pth" "INSERT_YOUR_CORRIDOR_KEY_DOWNLOAD_LINK_HERE"
+    curl.exe -L -o "CorridorKeyModule\checkpoints\CorridorKey.pth" "https://huggingface.co/nikopueringer/CorridorKey_v1.0/resolve/main/CorridorKey_v1.0.pth"
 ) else (
     echo CorridorKey.pth already exists!
 )
