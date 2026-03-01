@@ -62,7 +62,9 @@ def resolve_device(requested: str | None = None) -> str:
 
 
 def clear_device_cache(device: torch.device | str) -> None:
-    """Clear GPU memory cache if applicable (no-op for CPU/MPS)."""
+    """Clear GPU memory cache if applicable (no-op for CPU)."""
     device_type = device.type if isinstance(device, torch.device) else device
     if device_type == "cuda":
         torch.cuda.empty_cache()
+    elif device_type == "mps":
+        torch.mps.empty_cache()

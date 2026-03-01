@@ -857,6 +857,8 @@ def organize_clips(clips_dir):
 
 
 def interactive_wizard(win_path, device=None):
+    device = device or resolve_device()
+
     print("\n" + "=" * 60)
     print(" CORRIDOR KEY - SMART WIZARD")
     print("=" * 60)
