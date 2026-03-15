@@ -26,6 +26,7 @@ Naturally, I have not tested everything. If you encounter errors, please conside
 *   **Resolution Independent:** The engine dynamically scales inference to handle 4K plates while predicting using its native 2048x2048 high-fidelity backbone.
 *   **VFX Standard Outputs:** Natively reads and writes 16-bit and 32-bit Linear float EXR files, preserving true color math for integration in Nuke, Fusion, or Resolve.
 *   **Auto-Cleanup:** Includes a morphological cleanup system to automatically prune any tracking markers or tiny background features that slip through CorridorKey's detection.
+*   **Native Nuke Integration:** Export a `.cat` model file and run CorridorKey live inside a Foundry Nuke 17.0+ Inference node — any existing Nuke keyer output feeds directly as the alpha hint. See [`nuke/README.md`](nuke/README.md) for the full setup guide.
 
 ## Hardware Requirements
 
@@ -274,6 +275,28 @@ MLX uses img_size=2048 by default (same as Torch).
 - **"corridorkey_mlx not installed"** — run `uv sync --extra mlx`
 - **"MLX requires Apple Silicon"** — MLX only works on M1+ Macs
 - **Auto picked Torch unexpectedly** — set `CORRIDORKEY_BACKEND=mlx` explicitly
+
+## Nuke Integration
+
+CorridorKey can run natively inside **Foundry Nuke 17.0+** as a live Inference node. You export a standard `.cat` (Cattery) model file once, then connect any existing keying node's output directly as the alpha hint.
+
+> **Full documentation, step-by-step setup, and compositing node graph: [`nuke/README.md`](nuke/README.md)**
+
+Quick summary:
+
+1.  Download the weights with the included helper script (handles the Git LFS issue on Windows correctly):
+    ```bash
+    uv run python nuke/download_checkpoint.py
+    ```
+2.  Export the TorchScript model:
+    ```bash
+    uv run python nuke/export_torchscript.py
+    # → nuke/CorridorKey.pt  (~300 MB)
+    ```
+3.  In NukeX 17.0, import `nuke/CatFileCreators.nk` — a pre-configured template that generates `CorridorKey.cat` with one click.
+4.  Wire your comp: `Read (plate) + Read (hint) → Shuffle2 → Inference → Colorspace (sRGB→linear) → Premult → Merge Over`.
+
+The Inference node exposes three knobs: `despill_strength`, `gamma_input` (sRGB / Linear EXR), and `refiner_strength`.
 
 ## Advanced Usage
 
