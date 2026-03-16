@@ -3,7 +3,7 @@
 Native **Foundry Nuke 17.0+** support for [CorridorKey](CorridorKey\README.md).  
 Run the full green-screen unmixing network as a live Inference node directly inside your comp, using any existing Nuke keying node as the alpha hint input.
 
-![screenshot](.\assets\nuke_cattery.png)
+![screenshot](./assets/nuke_cattery.png)
 
 ---
 
@@ -63,7 +63,7 @@ Output [1, 4, H, W]
   ch 3    refined linear alpha matte [0, 1]
 ``` -->
 
-![flowchart diagram](.\assets\flowchart_diagram.png)
+![flowchart diagram](./assets/flowchart_diagram.png)
 
 ### Why `torch.jit.trace()` and not `torch.jit.script()`
 
@@ -212,7 +212,7 @@ The three custom knobs are already defined in the template:
                     Viewer / Write
 ``` -->
 
-![Nuke compositing setup](.\assets\comp_tree.png)
+![Nuke compositing setup](./assets/comp_tree.png)
 
 > **The Colorspace node between Inference and Premult is not optional.**  
 > The model outputs foreground colour in sRGB gamma. Premultiplying sRGB values against a linear alpha produces dark, crushed edges on every semi-transparent pixel — hair, motion blur, fine fabric. Always linearise the FG channels before Premult.
