@@ -1,0 +1,3 @@
+[submodule "CorridorKey"]
+	path = CorridorKey
+	url = https://github.com/nikopueringer/CorridorKey.git
