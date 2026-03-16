@@ -33,7 +33,7 @@ No upstream files are modified. The `nuke/` folder is purely additive.
 
 The CorridorKey model (`GreenFormer`) is a two-stage encoder-decoder:
 
-```
+<!-- ```
 Input  [1, 4, H, W]
   ch 0-2  plate RGB      sRGB or linear EXR, values [0, 1]
   ch 3    alpha hint     coarse mask from any Nuke keying node, [0, 1]
@@ -61,7 +61,9 @@ Input  [1, 4, H, W]
 Output [1, 4, H, W]
   ch 0-2  straight sRGB foreground   [0, 1]
   ch 3    refined linear alpha matte [0, 1]
-```
+``` -->
+
+![flowchart diagram](assets\flowchart_diagram.png)
 
 ### Why `torch.jit.trace()` and not `torch.jit.script()`
 
@@ -78,6 +80,25 @@ The ViT backbone uses `timm` internally, which relies on dynamic Python registri
 ---
 
 ## Step-by-step setup
+
+#### 0. Clone repository:
+
+```sh
+git clone --recurse-submodules https://github.com/aramadan0096/CorridorKey-Nuke-Cattery
+```
+
+#### Bootstrap
+
+Download and install uv package manager via winget and install python and dependencies.
+
+```sh
+.\install.bat
+```
+Download CorridorKey checkpoint and stat exporting torch script to `Export` folder.
+
+```sh
+.\start.bat
+```
 
 ### 1. Download the real weights
 
@@ -149,7 +170,7 @@ The three custom knobs are already defined in the template:
 
 ## Nuke compositing setup
 
-```
+<!-- ```
 ┌─ Read ─────────────────┐   ┌─ Read ─────────────────────────────────────┐
 │ green_screen_plate.exr  │   │ alpha_hint (any source — see below)        │
 │                         │   │                                            │
@@ -189,7 +210,9 @@ The three custom knobs are already defined in the template:
                 (A = premult FG, B = background)
                          │
                     Viewer / Write
-```
+``` -->
+
+![Nuke compositing setup](assets\comp_tree.png)
 
 > **The Colorspace node between Inference and Premult is not optional.**  
 > The model outputs foreground colour in sRGB gamma. Premultiplying sRGB values against a linear alpha produces dark, crushed edges on every semi-transparent pixel — hair, motion blur, fine fabric. Always linearise the FG channels before Premult.
