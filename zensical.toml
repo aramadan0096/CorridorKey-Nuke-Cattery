@@ -1,8 +1,8 @@
 [project]
 site_name = "CorridorKey"
 site_description = "Perfect Green Screen Keys"
-repo_name = "CorridorKey"
-repo_url = "https://github.com/nikopueringer/CorridorKey"
+repo_name = "CorridorKey Nuke Cattery"
+repo_url = "https://github.com/aramadan0096/CorridorKey-Nuke-Cattery"
 
 nav = [{ Home = "index.md" }, { LLM_HANDOVER = "LLM_HANDOVER.md" }]
 
