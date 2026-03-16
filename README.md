@@ -1,7 +1,12 @@
 # CorridorKey — Nuke Cattery Integration
 
+![screenshot](./assets/cattery.png)
+
 Native **Foundry Nuke 17.0+** support for [CorridorKey](CorridorKey\README.md).  
 Run the full green-screen unmixing network as a live Inference node directly inside your comp, using any existing Nuke keying node as the alpha hint input.
+
+
+
 
 ![screenshot](./assets/nuke_cattery.png)
 
@@ -242,6 +247,8 @@ The hint connects to `rgba.alpha` of the Shuffle2 node. Use whichever channel yo
 **`despill_strength`** — leave at 0 if you want full control downstream. For a quick deliverable, values of 3–6 remove most visible green contamination without affecting neutral tones.
 
 **`refiner_strength`** — reduce to 0.7–0.8 if you see shimmering or over-refined edge artefacts between frames. The coarse prediction (0.0) is already clean on most subjects; the refiner adds fine hair and motion-blur detail.
+
+<!-- ![screenshot](./assets/cattery.png) -->
 
 ---
 
