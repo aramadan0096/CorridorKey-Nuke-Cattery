@@ -3,7 +3,7 @@
 # Authored by: Ahmed Ramadan
 # This software is licensed under the Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International License.
 # Full license text: https://creativecommons.org/licenses/by-nc-nd/4.0
-# Repository: https://github.com/nikopueringer/CorridorKey
+# Repository: https://github.com/aramadan0096/CorridorKey-Nuke-Cattery
 ###############################################################################
 """
 nuke_wrapper.py
@@ -423,9 +423,11 @@ class CorridorKeyNukeWrapper(nn.Module):
                 "Download: uv run python nuke/download_checkpoint.py\n"
             )
 
-        # ── Ensure repo root is importable ────────────────────────────
+        # ── Ensure Python package root is importable ─────────────────
+        # nuke/ sits at the repo root; CorridorKeyModule is one level
+        # deeper inside the CorridorKey/ source package directory.
         _repo_root = os.path.abspath(
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "CorridorKey")
         )
         if _repo_root not in sys.path:
             sys.path.insert(0, _repo_root)

@@ -4,7 +4,7 @@
 # Authored by: Ahmed Ramadan
 # This software is licensed under the Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International License.
 # Full license text: https://creativecommons.org/licenses/by-nc-nd/4.0
-# Repository: https://github.com/nikopueringer/CorridorKey
+# Repository: https://github.com/aramadan0096/CorridorKey-Nuke-Cattery
 ###############################################################################
 """
 export_torchscript.py
@@ -31,7 +31,9 @@ from pathlib import Path
 import torch
 
 # Ensure the repo root is importable regardless of CWD
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+# _INNER_ROOT is the Python package root (contains CorridorKeyModule, etc.)
+_REPO_ROOT  = Path(__file__).resolve().parent.parent
+_INNER_ROOT = _REPO_ROOT / "CorridorKey"
 sys.path.insert(0, str(_REPO_ROOT))
 
 from nuke.nuke_wrapper import CorridorKeyNukeWrapper, _StubInner  # type: ignore
@@ -179,7 +181,7 @@ def export(checkpoint: str, output: str, validate: bool, device_str: str) -> Non
     print("  Next: open NukeX 17.0, create a CatFileCreator node")
     print()
     print(f"    Torchscript File  {out_path.absolute()}")
-    print( "    Cat File          nuke/CorridorKey.cat")
+    print( "    Cat File          Export/CorridorKey.cat")
     print( "    Channels In       rgba.red, rgba.green, rgba.blue, rgba.alpha")
     print( "    Channels Out      rgba.red, rgba.green, rgba.blue, rgba.alpha")
     print( "    Model Id          CorridorKey_v1.0_Nuke")
@@ -199,12 +201,12 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Export CorridorKey to TorchScript .pt")
     p.add_argument(
         "--checkpoint",
-        default=str(_REPO_ROOT / "CorridorKeyModule" / "checkpoints" / "CorridorKey.pth"),
+        default=str(_INNER_ROOT / "CorridorKeyModule" / "checkpoints" / "CorridorKey.pth"),
         help="Path to CorridorKey.pth  (~300 MB real weights)",
     )
     p.add_argument(
         "--output",
-        default=str(_REPO_ROOT / "nuke" / "CorridorKey.pt"),
+        default=str(_REPO_ROOT / "Export" / "CorridorKey.pt"),
         help="Output path for the TorchScript .pt file",
     )
     p.add_argument(

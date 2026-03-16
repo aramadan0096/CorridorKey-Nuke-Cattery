@@ -1,6 +1,6 @@
 # CorridorKey — Nuke Cattery Integration
 
-Native **Foundry Nuke 17.0+** support for CorridorKey v1.0.  
+Native **Foundry Nuke 17.0+** support for [CorridorKey](CorridorKey\README.md).  
 Run the full green-screen unmixing network as a live Inference node directly inside your comp, using any existing Nuke keying node as the alpha hint input.
 
 ![screenshot](assets\nuke_cattery.png)
@@ -18,7 +18,7 @@ nuke/
 ├── download_checkpoint.py   Reliably downloads the real ~300 MB weights
 ├── test_nuke_wrapper.py     32 self-contained tests (no PyTorch required)
 ├── inspect_model.py         Diagnostic tool if anything goes wrong
-├── Template.nk              ← Template Nuke script — open this in NukeX to
+├── Template.nk              ← Template Nuke script — open this in NukeX to build the .cat model
 │                              generate CorridorKey.cat with one click
 └── README.md                This file
 ```

@@ -4,7 +4,7 @@
 # Authored by: Ahmed Ramadan
 # This software is licensed under the Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International License.
 # Full license text: https://creativecommons.org/licenses/by-nc-nd/4.0
-# Repository: https://github.com/nikopueringer/CorridorKey
+# Repository: https://github.com/aramadan0096/CorridorKey-Nuke-Cattery
 ###############################################################################
 
 """
@@ -39,8 +39,10 @@ import urllib.request
 from pathlib import Path
 
 # Repo root = parent of nuke/
+# _INNER_ROOT is the Python package root (contains CorridorKeyModule, etc.)
 _REPO_ROOT  = Path(__file__).resolve().parent.parent
-_DEST       = _REPO_ROOT / "CorridorKeyModule" / "checkpoints" / "CorridorKey.pth"
+_INNER_ROOT = _REPO_ROOT / "CorridorKey"
+_DEST       = _INNER_ROOT / "CorridorKeyModule" / "checkpoints" / "CorridorKey.pth"
 _HF_REPO    = "nikopueringer/CorridorKey_v1.0"
 _HF_FILE    = "CorridorKey_v1.0.pth"
 _DIRECT_URL = (

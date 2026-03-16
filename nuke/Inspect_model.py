@@ -4,7 +4,7 @@
 # Authored by: Ahmed Ramadan
 # This software is licensed under the Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International License.
 # Full license text: https://creativecommons.org/licenses/by-nc-nd/4.0
-# Repository: https://github.com/nikopueringer/CorridorKey
+# Repository: https://github.com/aramadan0096/CorridorKey-Nuke-Cattery
 ###############################################################################
 """
 inspect_model.py
@@ -32,8 +32,10 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_REPO_ROOT))
+_REPO_ROOT  = Path(__file__).resolve().parent.parent
+_INNER_ROOT = _REPO_ROOT / "CorridorKey"   # Python package root (CorridorKeyModule lives here)
+sys.path.insert(0, str(_INNER_ROOT))       # for CorridorKeyModule imports
+sys.path.insert(0, str(_REPO_ROOT))        # for nuke.nuke_wrapper imports
 
 from nuke.nuke_wrapper import _strip_orig_mod, _discover_model_class  # type: ignore
 
@@ -46,7 +48,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Inspect model_transformer.py classes")
     p.add_argument(
         "--checkpoint",
-        default=str(_REPO_ROOT / "CorridorKeyModule" / "checkpoints" / "CorridorKey.pth"),
+        default=str(_INNER_ROOT / "CorridorKeyModule" / "checkpoints" / "CorridorKey.pth"),
     )
     args = p.parse_args()
 
