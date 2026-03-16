@@ -49,3 +49,7 @@ BiRefNetModule/checkpoints/*
 !BiRefNetModule/checkpoints/.gitkeep
 
 site
+
+# Nuke
+*.cat
+output.mov
