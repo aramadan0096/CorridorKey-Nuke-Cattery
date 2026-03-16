@@ -292,4 +292,4 @@ This Nuke integration inherits the CorridorKey license (CC BY-NC-SA 4.0 variant)
 
 <!-- For commercial plugin integration: `contact@corridordigital.com` -->
 
-Nuke Cattery Implementation Built on CorridorKey Authored by [Ahmed Ramadan](https://github.com/aramadan0096)
+Nuke Cattery Implementation Built on [CorridorKey](CorridorKey\README.md) Authored by [Ahmed Ramadan](https://github.com/aramadan0096)
