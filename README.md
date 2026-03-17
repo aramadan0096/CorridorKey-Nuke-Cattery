@@ -1,6 +1,6 @@
 # CorridorKey — Nuke Cattery Integration
 
-![screenshot](./assets/cattery.png)
+![screenshot](./assets/Cattery.png)
 
 Native **Foundry Nuke 17.0+** support for [CorridorKey](CorridorKey\README.md).  
 Run the full green-screen unmixing network as a live Inference node directly inside your comp, using any existing Nuke keying node as the alpha hint input.
@@ -83,6 +83,10 @@ The ViT backbone uses `timm` internally, which relies on dynamic Python registri
 | `GreenFormer` default `img_size` is wrong | `size mismatch for pos_embed` | Read actual patch **stride** from a live instance, compute `img_size = sqrt(num_patches) × stride` |
 
 ---
+## Cattery release installation 
+
+1. Just [download](https://github.com/aramadan0096/CorridorKey-Nuke-Cattery/releases) the release CorridorKey_Cattery_v##.zip 
+2. extract the .zip file content into your .nuke folder directly, the final path would be `\.nuke\Cattery\CorridorKey`
 
 ## Step-by-step setup
 
