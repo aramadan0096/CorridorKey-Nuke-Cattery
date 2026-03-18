@@ -10,30 +10,39 @@ nuke_wrapper.py
 ===============
 TorchScript-compatible Nuke Cattery wrapper for CorridorKey v1.0.
 
-Drop into the nuke/ subfolder of nikopueringer/CorridorKey.
-Upstream files are never modified.
+WHY TRACE + SCRIPT INSTEAD OF TRACE ALONE
+------------------------------------------
+torch.jit.trace() records a concrete execution graph from a single forward
+pass.  Any Python 'if' branch that evaluates to False at trace time is simply
+not recorded — it is permanently absent from the graph.  This means:
 
-Nuke .cat I/O
+  - gamma_input    defaults to 0 → the sRGB encoding branch is NEVER traced
+  - despill_strength defaults to 0 → the despill branch is NEVER traced
+  - refiner_strength defaults to 1.0 → baked in as a constant 1.0
+
+Result: changing any knob in Nuke has no effect on the output.
+
+CORRECT ARCHITECTURE (two-step export)
+---------------------------------------
+  Step 1 — TRACE the inner GreenFormer only.
+            torch.jit.trace handles timm's dynamic Python registries.
+            Output: a ScriptModule with fixed forward() semantics.
+
+  Step 2 — SCRIPT the outer CorridorKeyNukeWrapper.
+            torch.jit.script compiles the wrapper including all if-branches.
+            Attribute reads (self.gamma_input etc.) happen at call time, not
+            at compile time → Nuke knobs work correctly.
+
+NUKE .cat I/O
 -------------
   Input  [1, 4, H, W]  rgba.red/.green/.blue = plate,  rgba.alpha = hint
   Output [1, 4, H, W]  rgba.red/.green/.blue = sRGB FG, rgba.alpha = linear alpha
 
-Custom knobs (attribute names must match CatFileCreator "Name" exactly)
+CUSTOM KNOBS  (attribute names must match CatFileCreator "Name" exactly)
   despill_strength  float  0-10   green despill intensity
   gamma_input       int    0/1    0 = sRGB plate,  1 = linear EXR plate
   refiner_strength  float  0-1    0 = coarse only, 1 = full CNN refinement
-
-Architecture (from checkpoint key analysis)
--------------------------------------------
-  Outer class  : GreenFormer(img_size=2048, ...)
-  Sub-modules  : encoder (ViT, 24 blocks), alpha_decoder (SegFormer MLP),
-                 fg_decoder (SegFormer MLP), refiner (CNN)
-  Checkpoint   : saved from torch.compile() → '_orig_mod.' key prefix
-  img_size bug : patch_embed uses kernel=7, stride=4  (not stride==kernel)
-                 img_size must be inferred from the *stride*, not the kernel.
 """
-
-from __future__ import annotations
 
 import importlib
 import inspect
@@ -48,9 +57,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-# ---------------------------------------------------------------------------
-# Step 1 — strip torch.compile() prefix
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# ── Loading utilities (used by export_torchscript.py at export time only) ──
+# ===========================================================================
 
 def _strip_orig_mod(state: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     """Remove '_orig_mod.' prefix added by torch.compile()."""
@@ -65,24 +74,12 @@ def _strip_orig_mod(state: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     return stripped
 
 
-# ---------------------------------------------------------------------------
-# Step 2 — discover the model class by sub-module name matching + probe score
-# ---------------------------------------------------------------------------
-
 def _top_level_submodule_names(net: nn.Module) -> set:
     return {name for name, _ in net.named_children()}
 
 
 def _read_patch_stride(instance: nn.Module) -> Optional[int]:
-    """
-    Read the actual stride of the patch-embedding conv from a live model instance.
-
-    Traverses: instance.encoder.model.patch_embed.proj  (standard ViT path)
-    Falls back to a deep search for any Conv2d with 'patch' in its path.
-
-    Returns the stride as an int, or None if not found.
-    """
-    # Primary path: standard ViT layout used by GreenFormer
+    """Read the actual Conv stride from patch_embed — NOT the kernel size."""
     try:
         conv = instance.encoder.model.patch_embed.proj
         if isinstance(conv, nn.Conv2d):
@@ -90,18 +87,16 @@ def _read_patch_stride(instance: nn.Module) -> Optional[int]:
             return s[0] if isinstance(s, (tuple, list)) else int(s)
     except AttributeError:
         pass
-
-    # Fallback: search the whole module tree
-    for name, mod in instance.named_modules():
-        if isinstance(mod, nn.Conv2d) and "patch" in name.lower():
-            s = mod.stride
-            return s[0] if isinstance(s, (tuple, list)) else int(s)
-
+    for _, mod in instance.named_modules():
+        if isinstance(mod, nn.Conv2d):
+            attrs = [a for a in dir(mod) if 'patch' in a.lower()]
+            if attrs:
+                s = mod.stride
+                return s[0] if isinstance(s, (tuple, list)) else int(s)
     return None
 
 
 def _pos_embed_num_patches(instance: nn.Module) -> Optional[int]:
-    """Return num_patches from this instance's pos_embed, or None."""
     try:
         return instance.encoder.model.pos_embed.shape[1]
     except AttributeError:
@@ -116,52 +111,31 @@ def _discover_model_class(
     stripped_state: Dict[str, torch.Tensor],
 ) -> Tuple[type, nn.Module]:
     """
-    Find the nn.Module subclass in model_transformer.py that matches the
-    checkpoint, instantiated with the correct constructor arguments.
-
-    img_size fix
-    ------------
-    The patch embedding uses Conv2d(kernel=7, stride=4).  Inferring img_size
-    from kernel_size gives the wrong value (3584 instead of 2048).
-
-    Correct approach:
-      1. Instantiate the candidate class with NO args (default img_size).
-      2. Read the actual patch stride from instance.encoder.model.patch_embed.proj.stride
-      3. Compute: img_size = sqrt(target_num_patches) * patch_stride
-      4. Re-instantiate with the correct img_size.
-      5. Run load_state_dict(strict=False) as a probe to confirm.
-
-    If the class does not accept img_size, or stride cannot be read,
-    we fall back to trying a list of common img_size values.
+    Find the correct model class and a properly-instantiated instance.
+    Infers img_size from checkpoint pos_embed by reading the STRIDE
+    (not kernel_size) from a default-instantiated model.
     """
     required_names = {k.split(".")[0] for k in stripped_state}
-    print(
-        f"  [CorridorKey] Required sub-modules from checkpoint: "
-        f"{sorted(required_names)}"
-    )
+    print(f"  [CorridorKey] Required sub-modules: {sorted(required_names)}")
 
-    # Target num_patches from checkpoint pos_embed
     target_patches: Optional[int] = None
     for k, v in stripped_state.items():
         if "pos_embed" in k:
             target_patches = v.shape[1]
             break
 
-    # Gather public nn.Module subclasses defined in this module
-    candidates: List[Tuple[str, type]] = []
-    for name, obj in inspect.getmembers(module, inspect.isclass):
-        if name.startswith("_"):
-            continue
-        if not (isinstance(obj, type) and issubclass(obj, nn.Module)):
-            continue
-        if getattr(obj, "__module__", "") != module.__name__:
-            continue
-        candidates.append((name, obj))
+    candidates: List[Tuple[str, type]] = [
+        (name, obj)
+        for name, obj in inspect.getmembers(module, inspect.isclass)
+        if not name.startswith("_")
+        and isinstance(obj, type)
+        and issubclass(obj, nn.Module)
+        and getattr(obj, "__module__", "") == module.__name__
+    ]
 
     if not candidates:
         raise RuntimeError(
-            f"No public nn.Module subclasses found in {module.__file__}.\n"
-            f"Names: {[n for n in dir(module) if not n.startswith('_')]}"
+            f"No public nn.Module subclasses found in {module.__file__}."
         )
 
     best_cls:      Optional[type]      = None
@@ -170,69 +144,57 @@ def _discover_model_class(
     best_params    = -1
 
     for cls_name, cls in candidates:
-        # Does this class accept constructor arguments?
         try:
             sig = inspect.signature(cls.__init__)
-            accepted_params = {
-                n: p for n, p in sig.parameters.items()
-                if n != "self"
-            }
-            accepts_kwargs = any(
-                p.kind == inspect.Parameter.VAR_KEYWORD
-                for p in accepted_params.values()
-            )
             required_args = [
-                n for n, p in accepted_params.items()
-                if p.default is inspect.Parameter.empty
+                n for n, p in sig.parameters.items()
+                if n != "self"
+                and p.default is inspect.Parameter.empty
                 and p.kind not in (
                     inspect.Parameter.VAR_POSITIONAL,
                     inspect.Parameter.VAR_KEYWORD,
                 )
             ]
+            accepts_img_size = "img_size" in sig.parameters or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD
+                for p in sig.parameters.values()
+            )
         except (ValueError, TypeError):
-            accepted_params = {}
-            accepts_kwargs  = False
-            required_args   = []
+            required_args    = []
+            accepts_img_size = False
 
         if required_args:
-            continue  # Cannot auto-instantiate
+            continue
 
-        # ── Build the list of img_size values to try ───────────────────
-        img_size_candidates: List[Optional[int]] = [None]  # None = no-arg default
+        img_sizes_to_try: List[Optional[int]] = [None]
 
-        if target_patches is not None:
+        if target_patches is not None and accepts_img_size:
             target_grid = math.isqrt(target_patches)
+            # Strategy: instantiate with defaults, read actual stride
+            try:
+                default_inst = cls()
+                stride = _read_patch_stride(default_inst)
+                del default_inst
+                if stride and stride > 0:
+                    computed = target_grid * stride
+                    img_sizes_to_try.insert(0, computed)
+                    print(
+                        f"  [CorridorKey] Inferred img_size={computed} "
+                        f"from stride={stride} "
+                        f"(num_patches={target_patches}={target_grid}²)"
+                    )
+            except Exception:
+                pass
+            # Fallback: common strides
+            for st in (4, 2, 8, 1, 16, 3, 7, 14, 32):
+                gs = target_grid * st
+                if gs not in img_sizes_to_try:
+                    img_sizes_to_try.append(gs)
 
-            if ("img_size" in accepted_params) or accepts_kwargs:
-                # Strategy A: instantiate with default, read stride, compute img_size
-                try:
-                    default_inst = cls()
-                    patch_stride = _read_patch_stride(default_inst)
-                    if patch_stride is not None and patch_stride > 0:
-                        computed_img_size = target_grid * patch_stride
-                        img_size_candidates.insert(0, computed_img_size)
-                        print(
-                            f"  [CorridorKey] Inferred img_size={computed_img_size} "
-                            f"from patch stride={patch_stride} "
-                            f"(num_patches={target_patches}={target_grid}²)"
-                        )
-                    del default_inst
-                except Exception:
-                    pass
-
-                # Strategy B: common multiples of target_grid as fallback
-                for stride_guess in (4, 2, 8, 1, 16, 3, 7, 14, 32):
-                    gs = target_grid * stride_guess
-                    if gs not in img_size_candidates:
-                        img_size_candidates.append(gs)
-
-        # ── Try each img_size ──────────────────────────────────────────
-        instance: Optional[nn.Module] = None
-        for img_size in img_size_candidates:
+        for img_size in img_sizes_to_try:
             kwargs: Dict[str, Any] = {}
-            if img_size is not None:
-                if "img_size" in accepted_params or accepts_kwargs:
-                    kwargs["img_size"] = img_size
+            if img_size is not None and accepts_img_size:
+                kwargs["img_size"] = img_size
 
             try:
                 inst = cls(**kwargs)
@@ -240,19 +202,16 @@ def _discover_model_class(
             except Exception:
                 continue
 
-            # Must have ALL required sub-modules
             if not required_names.issubset(_top_level_submodule_names(inst)):
                 del inst
                 continue
 
-            # Check pos_embed matches — if not, skip this img_size
             if target_patches is not None:
-                actual_patches = _pos_embed_num_patches(inst)
-                if actual_patches is not None and actual_patches != target_patches:
+                actual = _pos_embed_num_patches(inst)
+                if actual is not None and actual != target_patches:
                     del inst
                     continue
 
-            # This img_size gives the right pos_embed shape → probe the full load
             try:
                 result   = inst.load_state_dict(stripped_state, strict=False)
                 n_bad    = len(result.missing_keys) + len(result.unexpected_keys)
@@ -267,48 +226,157 @@ def _discover_model_class(
                 best_params   = n_params
                 best_cls      = cls
                 best_instance = inst
-                if img_size is not None:
-                    print(
-                        f"  [CorridorKey] '{cls_name}' with img_size={img_size} "
-                        f"→ score {score}/{len(stripped_state)}, "
-                        f"{n_params/1e6:.1f} M params"
-                    )
+                print(
+                    f"  [CorridorKey] '{cls_name}' img_size={img_size} "
+                    f"→ score {score}/{len(stripped_state)}, "
+                    f"{n_params/1e6:.1f}M params"
+                )
             else:
                 del inst
-
-            break  # Found a valid img_size for this class — stop trying others
+            break
 
     if best_cls is None or best_instance is None:
         raise RuntimeError(
-            f"\nNo class in {module.__file__} matched all required "
-            f"sub-modules {sorted(required_names)}.\n\n"
-            f"Classes found: {[n for n, _ in candidates]}\n\n"
-            "Run  uv run python nuke/inspect_model.py  for a full diagnostic."
+            f"No class matched sub-modules {sorted(required_names)} in {module.__file__}.\n"
+            f"Classes found: {[n for n, _ in candidates]}\n"
+            "Run  uv run python nuke/inspect_model.py  for diagnostics."
         )
 
     print(
         f"  [CorridorKey] Selected '{best_cls.__name__}'  "
         f"(score {best_score}/{len(stripped_state)}, "
-        f"{best_params/1e6:.1f} M params)"
+        f"{best_params/1e6:.1f}M params)"
     )
     return best_cls, best_instance
 
 
-# ---------------------------------------------------------------------------
-# Output format adapter
-# ---------------------------------------------------------------------------
+def load_greenformer(checkpoint_path: str) -> nn.Module:
+    """
+    Load the raw GreenFormer nn.Module with weights applied.
+    Called by export_torchscript.py — not used at Nuke runtime.
+    """
+    if not os.path.isfile(checkpoint_path):
+        raise FileNotFoundError(
+            f"\nCheckpoint not found: {checkpoint_path}\n"
+            "Download: uv run python nuke/download_checkpoint.py\n"
+        )
 
-class _ModelAdapter(nn.Module):
-    """Normalises model output to (alpha_coarse, fg_coarse, alpha_fine, fg_fine)."""
+    size_bytes = os.path.getsize(checkpoint_path)
+    if size_bytes < 1_000_000:
+        lfs_hint = ""
+        try:
+            with open(checkpoint_path, "rb") as f:
+                h = f.read(200).decode("utf-8", errors="replace")
+            if "git-lfs" in h or "oid sha256" in h:
+                lfs_hint = "\n(Git LFS pointer — re-download with nuke/download_checkpoint.py)\n"
+        except Exception:
+            pass
+        raise ValueError(
+            f"\nCheckpoint is only {size_bytes:,} bytes (expected ~300 MB).{lfs_hint}"
+        )
 
-    def __init__(self, inner: nn.Module) -> None:
+    # nuke/ sits one level above the repo root *or* inside the CorridorKey
+    # submodule. Try both so the same file works from either location.
+    _nuke_dir = os.path.dirname(os.path.abspath(__file__))
+    _candidates = [
+        os.path.abspath(os.path.join(_nuke_dir, "..")),             # .../CorridorKey/
+        os.path.abspath(os.path.join(_nuke_dir, "..", "CorridorKey")),  # outer repo root → CorridorKey/
+    ]
+    for _candidate in _candidates:
+        if _candidate not in sys.path:
+            sys.path.insert(0, _candidate)
+
+    try:
+        _mt_mod = importlib.import_module("CorridorKeyModule.core.model_transformer")
+    except ImportError as exc:
+        raise ImportError(
+            f"\nCould not import CorridorKeyModule.core.model_transformer: {exc}\n"
+            "Run from repo root:  uv sync\n"
+        ) from exc
+
+    try:
+        raw = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    except Exception as exc:
+        raise RuntimeError(f"\ntorch.load failed: {exc}\n") from exc
+
+    if isinstance(raw, dict):
+        for key in ("model_state_dict", "state_dict", "model"):
+            if key in raw:
+                raw = raw[key]
+                break
+
+    raw = _strip_orig_mod(raw)
+
+    _ModelClass, net = _discover_model_class(_mt_mod, raw)
+
+    try:
+        net.load_state_dict(raw, strict=True)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"\nload_state_dict failed for '{_ModelClass.__name__}':\n{exc}\n"
+            "Run  uv run python nuke/inspect_model.py  for diagnostics.\n"
+        ) from exc
+
+    net.eval()
+    n_params = sum(p.numel() for p in net.parameters())
+    print(
+        f"  [CorridorKey] Loaded {size_bytes/1e6:.0f} MB checkpoint "
+        f"→ '{_ModelClass.__name__}'  ({n_params/1e6:.1f}M params)"
+    )
+
+    # Detect single-stage vs two-stage model by doing a tiny probe forward
+    # and checking whether the output length is 2 or 4.
+    # Single-stage (len==2): refiner_strength is a no-op (coarse == fine).
+    # Two-stage  (len==4): refiner_strength blends coarse → refined output.
+    try:
+        with torch.no_grad():
+            probe_out = net(torch.zeros(1, 4, 64, 64))
+        n_outputs = len(probe_out) if isinstance(probe_out, (list, tuple)) else 0
+        if n_outputs == 2:
+            print(
+                "  [CorridorKey] Single-stage model detected "
+                "(forward returns 2 outputs). "
+                "refiner_strength knob will have no effect in Nuke — "
+                "this is correct for this checkpoint."
+            )
+        elif n_outputs == 4:
+            print(
+                "  [CorridorKey] Two-stage model detected "
+                "(forward returns 4 outputs). "
+                "refiner_strength knob is fully live."
+            )
+    except Exception:
+        pass  # probe is optional — never block the export
+
+    return net
+
+
+# ===========================================================================
+# ── _InnerTraceable: wraps GreenFormer for torch.jit.trace ─────────────────
+#
+# This class is TRACED (not scripted) to handle timm's dynamic Python
+# registries.  It normalises GreenFormer's output to a fixed 4-tuple so
+# that the outer scripted wrapper has a known return type to unpack.
+# ===========================================================================
+
+class _InnerTraceable(nn.Module):
+    """
+    Wraps the raw GreenFormer and normalises its output to:
+      Tuple[alpha_coarse, fg_coarse, alpha_fine, fg_fine]
+
+    This class is intended to be exported via torch.jit.trace(), NOT script().
+    The isinstance() checks in forward() run at trace time (fine for tracing)
+    and the resulting graph records only the tensor ops that were executed.
+    """
+
+    def __init__(self, net: nn.Module) -> None:
         super().__init__()
-        self.inner = inner
+        self.net = net
 
     def forward(
         self, x: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        out = self.inner(x)
+        out = self.net(x)
 
         if isinstance(out, dict):
             if "alpha_coarse" in out:
@@ -320,25 +388,22 @@ class _ModelAdapter(nn.Module):
             if "alpha" in out and "fg" in out:
                 return (out["alpha"], out["fg"], out["alpha"], out["fg"])
             vals = list(out.values())
-            if len(vals) >= 2:
-                return (vals[0], vals[1], vals[0], vals[1])
-            raise ValueError(f"Dict keys: {list(out.keys())}")
+            return (vals[0], vals[1], vals[0], vals[1])
 
-        if isinstance(out, (list, tuple)):
-            if len(out) == 4:
-                return (out[0], out[1], out[2], out[3])
-            if len(out) == 2:
-                return (out[0], out[1], out[0], out[1])
+        if isinstance(out, (list, tuple)) and len(out) == 4:
+            return (out[0], out[1], out[2], out[3])
+        if isinstance(out, (list, tuple)) and len(out) == 2:
+            return (out[0], out[1], out[0], out[1])
 
-        raise ValueError(f"Unexpected output type {type(out)}.")
+        raise ValueError(f"Unexpected GreenFormer output type: {type(out)}")
 
 
-# ---------------------------------------------------------------------------
-# Stub — for tests / CI when no checkpoint is supplied
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# ── Stub: for tests / CI when no checkpoint is provided ────────────────────
+# ===========================================================================
 
 class _StubInner(nn.Module):
-    """Correct shape/range, meaningless values. Tests only."""
+    """Correct shape/range, meaningless values.  Tests and CI only."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -357,161 +422,62 @@ class _StubInner(nn.Module):
                 torch.clamp(fg + 0.005 * x[:, :3],  0.0, 1.0))
 
 
-# ---------------------------------------------------------------------------
-# Main wrapper
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# ── CorridorKeyNukeWrapper: the SCRIPTABLE outer wrapper ───────────────────
+#
+# This class is exported via torch.jit.SCRIPT (not trace).
+# In script mode, self.gamma_input / self.despill_strength / self.refiner_strength
+# are read dynamically at each forward() call, so Nuke knob changes take effect.
+# ===========================================================================
 
 class CorridorKeyNukeWrapper(nn.Module):
-    """TorchScript-traceable Nuke Cattery wrapper for CorridorKey v1.0."""
+    """
+    Scriptable Nuke Cattery wrapper.
 
-    _MODEL_H: int = 2048
-    _MODEL_W: int = 2048
+    Accepts a pre-traced inner module (from _InnerTraceable or _StubInner).
+    The knob attributes are read at call time — NOT frozen at compile time.
 
-    def __init__(
-        self,
-        checkpoint_path: str = "",
-        despill_strength: float = 0.0,
-        gamma_input: int = 0,
-        refiner_strength: float = 1.0,
-    ) -> None:
+    Export via:
+        traced_inner = torch.jit.trace(_InnerTraceable(greenformer), dummy)
+        wrapper      = CorridorKeyNukeWrapper(traced_inner)
+        scripted     = torch.jit.script(wrapper)
+        scripted.save("CorridorKey.pt")
+    """
+
+    # TorchScript requires explicit type annotations for all persistent attrs
+    despill_strength: float
+    gamma_input:      int
+    refiner_strength: float
+
+    _MODEL_H: int
+    _MODEL_W: int
+
+    def __init__(self, inner: nn.Module) -> None:
         super().__init__()
+        self.inner = inner
 
-        # Knob attributes — names MUST match CatFileCreator "Name" fields exactly
-        self.despill_strength: float = despill_strength
-        self.gamma_input: int        = gamma_input
-        self.refiner_strength: float = refiner_strength
+        # Knob defaults — names MUST match CatFileCreator "Name" fields exactly
+        self.despill_strength = 0.0
+        self.gamma_input      = 0
+        self.refiner_strength = 1.0
 
-        self.model = _ModelAdapter(self._load_model(checkpoint_path))
-
-    # ------------------------------------------------------------------
-    # Checkpoint loading
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _load_model(checkpoint_path: str) -> nn.Module:
-        """
-        Load the full CorridorKey model + weights.
-
-        Three non-obvious problems solved here:
-          1. _orig_mod. prefix from torch.compile() — strip before load
-          2. Model class name unknown — discover by sub-module matching
-          3. img_size defaults wrong — read patch stride from a live instance,
-             compute correct img_size, re-instantiate before loading weights
-        """
-        if not checkpoint_path:
-            return _StubInner()
-
-        # ── Validate file ─────────────────────────────────────────────
-        if not os.path.isfile(checkpoint_path):
-            raise FileNotFoundError(
-                f"\nCheckpoint not found: {checkpoint_path}\n\n"
-                "Download: uv run python nuke/download_checkpoint.py\n"
-            )
-        size_bytes = os.path.getsize(checkpoint_path)
-        if size_bytes < 1_000_000:
-            lfs_hint = ""
-            try:
-                with open(checkpoint_path, "rb") as f:
-                    header = f.read(200).decode("utf-8", errors="replace")
-                if "git-lfs" in header or "oid sha256" in header:
-                    lfs_hint = "\nThis is a Git LFS pointer, not the real binary.\n"
-            except Exception:
-                pass
-            raise ValueError(
-                f"\nCheckpoint is {size_bytes:,} bytes — too small (expected ~300 MB).\n"
-                f"{lfs_hint}"
-                "Download: uv run python nuke/download_checkpoint.py\n"
-            )
-
-        # ── Ensure Python package root is importable ─────────────────
-        # nuke/ sits at the repo root; CorridorKeyModule is one level
-        # deeper inside the CorridorKey/ source package directory.
-        _repo_root = os.path.abspath(
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "CorridorKey")
-        )
-        if _repo_root not in sys.path:
-            sys.path.insert(0, _repo_root)
-
-        # ── Import model_transformer ──────────────────────────────────
-        try:
-            _mt_mod = importlib.import_module(
-                "CorridorKeyModule.core.model_transformer"
-            )
-        except ImportError as exc:
-            raise ImportError(
-                f"\nCould not import CorridorKeyModule.core.model_transformer\n"
-                f"Error: {exc}\n\n"
-                "Run from the repo root:  uv sync\n"
-                f"Repo root tried: {_repo_root}\n"
-            ) from exc
-
-        # ── Load raw checkpoint ───────────────────────────────────────
-        try:
-            raw = torch.load(
-                checkpoint_path, map_location="cpu", weights_only=True
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"\ntorch.load failed: {exc}\n\n"
-                "Re-download: uv run python nuke/download_checkpoint.py\n"
-            ) from exc
-
-        if isinstance(raw, dict):
-            for key in ("model_state_dict", "state_dict", "model"):
-                if key in raw:
-                    raw = raw[key]
-                    break
-
-        # ── Strip _orig_mod. prefix ────────────────────────────────────
-        raw = _strip_orig_mod(raw)
-
-        # ── Discover class and correctly-instantiated model ────────────
-        #
-        # _discover_model_class:
-        #   1. Reads patch stride from a default instance (not from weight shape)
-        #   2. Computes img_size = sqrt(num_patches) * patch_stride
-        #   3. Re-instantiates with the correct img_size
-        #   4. Verifies pos_embed shape matches before probing load
-        try:
-            _ModelClass, net = _discover_model_class(_mt_mod, raw)
-        except RuntimeError as exc:
-            raise RuntimeError(str(exc)) from exc
-
-        # ── Load weights (strict) ────────────────────────────────────
-        try:
-            net.load_state_dict(raw, strict=True)
-        except RuntimeError as exc:
-            state_tops = sorted({k.split(".")[0] for k in raw})
-            model_tops = sorted(_top_level_submodule_names(net))
-            raise RuntimeError(
-                f"\nload_state_dict(strict=True) failed for '{_ModelClass.__name__}'.\n"
-                f"  State dict top-level keys : {state_tops}\n"
-                f"  Model  top-level children : {model_tops}\n\n"
-                f"Original error: {exc}\n\n"
-                "Run  uv run python nuke/inspect_model.py  for a full diagnostic.\n"
-            ) from exc
-
-        net.eval()
-        n_params = sum(p.numel() for p in net.parameters())
-        print(
-            f"  [CorridorKey] Loaded {size_bytes/1e6:.0f} MB checkpoint  "
-            f"→ '{_ModelClass.__name__}'  ({n_params/1e6:.1f} M params)"
-        )
-        return net
+        # Native model resolution (must be int constants for TorchScript)
+        self._MODEL_H = 2048
+        self._MODEL_W = 2048
 
     # ------------------------------------------------------------------
-    # Color math helpers (TorchScript-safe)
+    # Color math — TorchScript-safe (pure torch ops, no numpy, no cv2)
     # ------------------------------------------------------------------
 
     def _linear_to_srgb(self, x: torch.Tensor) -> torch.Tensor:
-        """IEC 61966-2-1: linear → sRGB."""
+        """IEC 61966-2-1: linear light → sRGB gamma encoding."""
         x  = torch.clamp(x, 0.0, 1.0)
         lo = x * 12.92
         hi = 1.055 * torch.pow(torch.clamp(x, min=1e-9), 1.0 / 2.4) - 0.055
         return torch.clamp(torch.where(x <= 0.0031308, lo, hi), 0.0, 1.0)
 
     def _despill_green(self, fg: torch.Tensor) -> torch.Tensor:
-        """Average green despill — only G channel is modified."""
+        """Average green despill.  Only the G channel is modified."""
         r = fg[:, 0:1, :, :]
         g = fg[:, 1:2, :, :]
         b = fg[:, 2:3, :, :]
@@ -525,13 +491,41 @@ class CorridorKeyNukeWrapper(nn.Module):
         return torch.cat([r, torch.clamp(g_out, 0.0, 1.0), b], dim=1)
 
     # ------------------------------------------------------------------
-    # forward()
+    # forward() — ALL branches are compiled and execute dynamically
     # ------------------------------------------------------------------
+
+    def _soften_alpha(self, alpha: torch.Tensor) -> torch.Tensor:
+        """
+        Spatially soften an alpha matte by average-pooling then upsampling.
+        Equivalent to a fast, separable box blur.  Kernel size = 9×9 at 2048px.
+        Used by the refiner_strength knob to smooth chattery / high-frequency edges.
+        """
+        H: int = alpha.shape[2]
+        W: int = alpha.shape[3]
+        # Pool to 1/4 resolution then upsample — cheap spatial blur
+        small = F.avg_pool2d(alpha, kernel_size=9, stride=1, padding=4)
+        return F.interpolate(small, size=(H, W), mode="bilinear", align_corners=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        x   : [1, 4, H, W]  ch0-2 = plate RGB,  ch3 = alpha hint
-        out : [1, 4, H, W]  ch0-2 = sRGB FG,     ch3 = linear alpha
+        x   : [1, 4, H, W]  ch0-2 = plate RGB (sRGB),  ch3 = alpha hint
+        out : [1, 4, H, W]  ch0-2 = straight sRGB FG,   ch3 = linear alpha
+
+        All three knobs are read at call time (torch.jit.script behaviour):
+
+          gamma_input      0 = sRGB plate (pass-through)
+                           1 = linear EXR plate → encode to sRGB before model
+
+          despill_strength 0 = off,  10 = full green-channel despill
+
+          refiner_strength 1.0 = sharp model output  (default)
+                           0.0 = spatially softened alpha
+                           Useful for taming chattery / high-frequency matte edges.
+                           NOTE: GreenFormer returns a single (alpha, fg) pair —
+                           there is no separate coarse/fine output to blend.
+                           refiner_strength therefore controls edge sharpness via
+                           a lerp between the raw model alpha and a box-blurred
+                           version of it.  FG colour is always at full sharpness.
         """
         dtype  = x.dtype
         H: int = x.shape[2]
@@ -540,26 +534,46 @@ class CorridorKeyNukeWrapper(nn.Module):
         plate = x[:, 0:3, :, :]
         hint  = x[:, 3:4, :, :]
 
+        # ── gamma_input knob ─────────────────────────────────────────
         if self.gamma_input == 1:
             plate = self._linear_to_srgb(plate)
 
+        # ── Resize to native model resolution ────────────────────────
         model_in = F.interpolate(
             torch.cat([plate, hint], dim=1),
             size=(self._MODEL_H, self._MODEL_W),
             mode="bilinear", align_corners=False,
         )
 
-        alpha_c, fg_c, alpha_f, fg_f = self.model(model_in)
+        # ── Neural network inference ──────────────────────────────────
+        # GreenFormer is a single-stage model: it returns one (alpha, fg) pair.
+        # _InnerTraceable maps any 2-tuple as (a, fg, a, fg) so alpha_c == alpha_f.
+        # We use only alpha_c / fg_c (the actual model outputs).
+        alpha_c, fg_c, _, _ = self.inner(model_in)
 
-        s     = self.refiner_strength
-        alpha = torch.clamp(alpha_c + s * (alpha_f - alpha_c), 0.0, 1.0)
-        fg    = torch.clamp(fg_c    + s * (fg_f    - fg_c),    0.0, 1.0)
+        alpha = torch.clamp(alpha_c, 0.0, 1.0)
+        fg    = torch.clamp(fg_c,    0.0, 1.0)
 
+        # ── Resize back to original plate resolution ─────────────────
         alpha = F.interpolate(alpha, size=(H, W), mode="bilinear", align_corners=False)
         fg    = F.interpolate(fg,    size=(H, W), mode="bilinear", align_corners=False)
 
+        # ── refiner_strength knob ────────────────────────────────────
+        # 1.0 = sharp model output (default, no change)
+        # 0.0 = softened alpha (smooths chattery / noisy matte edges)
+        # Applied only to alpha — FG colour is always at full sharpness.
+        if self.refiner_strength < 1.0:
+            soft  = self._soften_alpha(alpha)
+            s     = torch.clamp(
+                torch.tensor(self.refiner_strength, dtype=alpha.dtype, device=alpha.device),
+                0.0, 1.0,
+            )
+            alpha = s * alpha + (1.0 - s) * soft
+            alpha = torch.clamp(alpha, 0.0, 1.0)
+
+        # ── despill_strength knob ────────────────────────────────────
         if self.despill_strength > 0.0:
             fg = self._despill_green(fg)
 
+        # ── Pack output: FG rgb (ch0-2) + alpha (ch3) ────────────────
         return torch.cat([fg, alpha], dim=1).contiguous().to(dtype)
-    

@@ -6,6 +6,7 @@
 # Full license text: https://creativecommons.org/licenses/by-nc-nd/4.0
 # Repository: https://github.com/nikopueringer/CorridorKey
 ###############################################################################
+#!/usr/bin/env python3
 """
 test_nuke_wrapper.py
 ====================
@@ -313,7 +314,11 @@ def _rnd(*shape, seed=0) -> _Tensor:
 
 def _model(**kw) -> CorridorKeyNukeWrapper:
     """Stub model — no checkpoint."""
-    return CorridorKeyNukeWrapper(**kw)
+    # Knob kwargs are set as attributes after construction (new API)
+    m = CorridorKeyNukeWrapper(_StubInner())
+    for k, v in kw.items():
+        setattr(m, k, v)
+    return m
 
 
 def _run(m: CorridorKeyNukeWrapper, H=64, W=64, seed=1) -> _Tensor:
