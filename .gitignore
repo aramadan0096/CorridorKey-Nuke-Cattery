@@ -54,3 +54,4 @@ site
 *.cat
 output.mov
 test.nk
+*.nk.autosave

@@ -538,6 +538,16 @@ class CorridorKeyNukeWrapper(nn.Module):
         if self.gamma_input == 1:
             plate = self._linear_to_srgb(plate)
 
+        # ── ImageNet normalisation (RGB only, NOT the alpha hint) ────
+        # GreenFormer was trained with ImageNet-normalised sRGB input.
+        # Without this step the model receives raw [0-1] pixels and
+        # produces washed-out / decontrasted foreground colours.
+        mean = torch.tensor([0.485, 0.456, 0.406],
+                            dtype=plate.dtype, device=plate.device).view(1, 3, 1, 1)
+        std  = torch.tensor([0.229, 0.224, 0.225],
+                            dtype=plate.dtype, device=plate.device).view(1, 3, 1, 1)
+        plate = (plate - mean) / std
+
         # ── Resize to native model resolution ────────────────────────
         model_in = F.interpolate(
             torch.cat([plate, hint], dim=1),

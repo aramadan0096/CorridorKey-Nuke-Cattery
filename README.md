@@ -240,6 +240,8 @@ The hint connects to `rgba.alpha` of the Shuffle2 node. Use whichever channel yo
 
 ## Knob usage guide
 
+![screenshot](./assets/NukeKnobs.png)
+
 **`gamma_input`** — the most important knob to get right.
 
 | Plate format | Read node setting | gamma_input |
