@@ -2,7 +2,7 @@
 
 ![screenshot](./assets/Cattery.png)
 
-Native **Foundry Nuke 15.0+** support for [CorridorKey](https://github.com/nikopueringer/CorridorKey/README.md).
+Native **Foundry Nuke 15.0+** support for [CorridorKey](https://github.com/nikopueringer/CorridorKey).
 Run the full green-screen unmixing network as a live Inference node directly inside your comp, using any existing Nuke keying node as the alpha hint input.
 
 
